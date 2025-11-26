@@ -4,30 +4,24 @@ from collections import defaultdict, deque
 
 class BPMNSourceDeadlockDetector:
     """
-    Deteksi Source Deadlock (versi revisi, sesuai verifikasi):
-
-    Definisi yang dipakai di sini:
+    Deteksi Source Deadlock (mendukung kolaborasi / multi-pool):
 
     - SOURCE S:
-      * Node (biasanya Activity) dengan >= 2 outgoing edge bertipe SEQUENCE_FLOW.
+      * Node (biasanya Activity / Gateway) dengan >= 2 outgoing edge
+        bertipe control-flow:
+          type(r) ∈ {"SEQUENCE_FLOW", "EXCLUSIVEGATEWAY", "PARALLELGATEWAY"}.
       * S reachable dari Start Event (supaya benar-benar bisa dieksekusi).
 
     - JOIN J:
       * Node yang dicapai oleh >= 2 cabang berbeda yang berawal dari SOURCE S:
           S -> child_1 -> ... -> J
           S -> child_2 -> ... -> J
-      * Kita pilih node J yang memang:
-          - punya indegree >= 2 (secara struktur dia join),
-          - (opsional tapi disertakan) bisa mencapai End Event.
+      * J punya indegree >= 2 (titik gabung),
+      * dan (opsional) J bisa mencapai End Event.
 
-    Dengan demikian, contoh yang kamu verifikasi:
-        S = Task 1
-        Cabang:
-          Task 1 -> Task 2 -> Task 4
-          Task 1 -> Task 3 -> Task 4
-        JOIN = Task 4
-
-    akan terdeteksi sebagai 1 Source Deadlock, dengan label JOIN = Task 4.
+    Contoh pola pada model:
+        S   = aktivitas tempat proses bercabang
+        JOIN = aktivitas tempat cabang-cabang tersebut bertemu lagi
     """
 
     def __init__(self, uri, user, password):
@@ -186,7 +180,7 @@ class BPMNSourceDeadlockDetector:
         return path
 
     # ---------------------------------------------------------
-    # 4. DETEKSI SOURCE DEADLOCK (VERSI REVISI)
+    # 4. DETEKSI SOURCE DEADLOCK
     # ---------------------------------------------------------
     def detect_source_deadlocks(self, process_id):
         nodes, out_edges, in_edges = self._load_process_graph(process_id)
@@ -209,25 +203,29 @@ class BPMNSourceDeadlockDetector:
         )
 
         # 4.1. Cari SOURCE:
-        #      node dengan >= 2 outgoing SEQUENCE_FLOW,
-        #      bukan Pool/Lane (supaya tidak noise).
+        #      node dengan >= 2 outgoing control-flow:
+        #      type(r) ∈ {SEQUENCE_FLOW, EXCLUSIVEGATEWAY, PARALLELGATEWAY},
+        #      dan bukan Pool/Lane.
         sources = []  # list of (source_node_id, list_of_children)
+        CONTROL_RELS = {"SEQUENCE_FLOW", "EXCLUSIVEGATEWAY", "PARALLELGATEWAY"}
+
         for nid, outgoing in out_edges.items():
             labels = nodes.get(nid, {}).get("labels", [])
             if "Pool" in labels or "Lane" in labels:
                 continue
 
-            seq_children = [dst for (dst, rtype) in outgoing
-                            if rtype.upper() == "SEQUENCE_FLOW"]
+            children = [
+                dst for (dst, rtype) in outgoing
+                if (rtype or "").upper() in CONTROL_RELS
+            ]
 
-            if len(seq_children) >= 2 and nid in reachable_from_start:
-                sources.append((nid, seq_children))
+            if len(children) >= 2 and nid in reachable_from_start:
+                sources.append((nid, children))
 
         source_deadlocks = []
 
         # 4.2. Untuk setiap SOURCE, cari JOIN yang benar
         for s, children in sources:
-            # Untuk tiap child, lakukan BFS terpisah
             child_reachables = {}
             child_parents = {}
 
@@ -236,7 +234,6 @@ class BPMNSourceDeadlockDetector:
                 child_reachables[c] = reachable_c
                 child_parents[c] = parent_c
 
-            # Kumpulkan semua kandidat node yang dicapai minimal oleh 1 child
             candidate_nodes = set()
             for c in children:
                 candidate_nodes |= child_reachables[c]
@@ -245,7 +242,7 @@ class BPMNSourceDeadlockDetector:
                 if j == s:
                     continue
 
-                # JOIN harus punya indegree >= 2 (secara struktur join)
+                # JOIN harus punya indegree >= 2
                 if len(in_edges.get(j, [])) < 2:
                     continue
 
@@ -253,7 +250,6 @@ class BPMNSourceDeadlockDetector:
                 if end_nodes and j not in can_reach_end:
                     continue
 
-                # Cari cabang mana saja yang bisa sampai ke j
                 contributing_children = []
                 child_paths = {}
 
@@ -270,7 +266,6 @@ class BPMNSourceDeadlockDetector:
                     contributing_children.append(c)
                     child_paths[c] = full_path
 
-                # Minimal 2 cabang dari S yang akhirnya bertemu di J
                 if len(contributing_children) >= 2:
                     source_deadlocks.append({
                         "source": s,
@@ -278,15 +273,18 @@ class BPMNSourceDeadlockDetector:
                         "source_info": nodes.get(s, {}),
                         "join_info": nodes.get(j, {}),
                         "children": contributing_children,
-                        "children_info": {c: nodes.get(c, {}) for c in contributing_children},
+                        "children_info": {
+                            c: nodes.get(c, {}) for c in contributing_children
+                        },
                         "paths": child_paths,
+                        "nodes": nodes,  # supaya main bisa akses nama semua node
                     })
 
         return source_deadlocks
 
 
 # ---------------------------------------------------------
-# 5. MAIN: CONTOH PEMAKAIAN
+# 5. MAIN: OUTPUT LEBIH MUDAH DIBACA ORANG AWAM
 # ---------------------------------------------------------
 if __name__ == "__main__":
     # Sesuaikan koneksi Neo4j
@@ -294,35 +292,68 @@ if __name__ == "__main__":
     NEO4J_USER = "neo4j"
     NEO4J_PASSWORD = "12345678"
 
-    # Ganti dengan process_id BPMN yang ingin dicek
-    PROCESS_ID = "dabc4f5c-1aea-4f27-a106-18930d60b904"
+    # HARUS sesuai dengan process_id di CQL (perhatikan 'f' di belakang)
+    PROCESS_ID = "36fc4ab6-b8e0-40cb-b673-6289db3235df"
 
     detector = BPMNSourceDeadlockDetector(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
     try:
         deadlocks = detector.detect_source_deadlocks(PROCESS_ID)
 
         if not deadlocks:
-            print(f"Tidak ditemukan Source Deadlock untuk process_id={PROCESS_ID}")
+            print(f"Tidak ditemukan pola *Source Deadlock* pada process_id = {PROCESS_ID}.")
         else:
-            print(f"Ditemukan {len(deadlocks)} Source Deadlock untuk process_id={PROCESS_ID}:")
+            print(f"Ditemukan {len(deadlocks)} pola *Source Deadlock* pada process_id = {PROCESS_ID}.\n")
+
             for i, dl in enumerate(deadlocks, start=1):
+                nodes_map = dl["nodes"]
+
                 s = dl["source"]
                 j = dl["join"]
                 s_info = dl["source_info"]
                 j_info = dl["join_info"]
 
-                print(f"\n[Source Deadlock #{i}]")
-                print("  SOURCE (node dengan >=2 SEQUENCE_FLOW keluar):")
-                print(f"    - {s}: name={s_info.get('name')}, type={s_info.get('type')}")
+                source_name = s_info.get("name") or s
+                join_name = j_info.get("name") or j
 
-                print("  JOIN (node tempat minimal 2 cabang dari SOURCE bertemu):")
-                print(f"    - {j}: name={j_info.get('name')}, type={j_info.get('type')}")
+                print("====================================================")
+                print(f"[Source Deadlock #{i}]")
+                print("Ringkasan pola:")
+                print(f"  • Proses mulai bercabang di aktivitas: {source_name} (id={s})")
+                print(f"  • Cabang-cabang tersebut bertemu kembali di: {join_name} (id={j})")
+                print("  • Struktur seperti ini berpotensi membingungkan alur eksekusi,")
+                print("    karena beberapa jalur yang dimulai dari titik yang sama")
+                print("    digabung lagi tanpa gateway join yang jelas.\n")
 
-                print("  Cabang-cabang dari SOURCE yang bertemu di JOIN:")
-                for c in dl["children"]:
+                print("Detail struktur:")
+                print("  - Titik sumber percabangan (SOURCE):")
+                print(f"      {source_name}  [type={s_info.get('type')}, id={s}]")
+
+                print("  - Titik gabung cabang (JOIN):")
+                print(f"      {join_name}  [type={j_info.get('type')}, id={j}]")
+
+                print("\n  Cabang-cabang dari SOURCE yang bertemu kembali di JOIN:")
+                for idx, c in enumerate(dl["children"], start=1):
                     c_info = dl["children_info"][c]
-                    path = dl["paths"][c]
-                    print(f"    - Child: {c}, name={c_info.get('name')}, type={c_info.get('type')}")
-                    print(f"      Path (id): {' -> '.join(path)}")
+                    c_name = c_info.get("name") or c
+                    path_ids = dl["paths"][c]
+
+                    # Konversi id → nama (kalau ada, kalau tidak pakai id)
+                    path_names = []
+                    for nid in path_ids:
+                        n_info = nodes_map.get(nid, {})
+                        nm = n_info.get("name") or nid
+                        path_names.append(nm)
+
+                    print(f"    Cabang {idx}:")
+                    print(f"      • Child awal cabang : {c_name}  [type={c_info.get('type')}, id={c}]")
+                    print(f"      • Urutan aktivitas  : {' -> '.join(path_names)}")
+
+                print("\nPenjelasan singkat:")
+                print(f"  Di aktivitas '{source_name}', alur proses dipecah menjadi beberapa cabang.")
+                print(f"  Cabang-cabang itu kemudian digabung lagi di '{join_name}'.")
+                print("  Bila tidak dimodelkan dengan gateway yang tepat, struktur ini bisa")
+                print("  menimbulkan *source deadlock*: proses tampak memiliki dua alur yang")
+                print("  saling bergantung, tetapi tidak jelas aturan eksekusinya.\n")
+
     finally:
         detector.close()

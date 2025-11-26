@@ -268,7 +268,7 @@ if __name__ == "__main__":
     NEO4J_PASSWORD = "12345678"
 
     # process_id dari graph Improper Struct
-    PROCESS_ID = "8f6842f8-634a-41f7-afbf-4e9d54065b0d"
+    PROCESS_ID = "0b230d09-277b-4b6c-87a4-4c81a5ea2937"
 
     detector = BPMNImproperStructDeadlockDetector(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
     try:
