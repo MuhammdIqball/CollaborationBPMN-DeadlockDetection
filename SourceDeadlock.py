@@ -19,15 +19,6 @@ class BPMNSourceDeadlockDetector:
       * Kita pilih node J yang memang:
           - punya indegree >= 2 (secara struktur dia join),
           - (opsional tapi disertakan) bisa mencapai End Event.
-
-    Dengan demikian, contoh yang kamu verifikasi:
-        S = Task 1
-        Cabang:
-          Task 1 -> Task 2 -> Task 4
-          Task 1 -> Task 3 -> Task 4
-        JOIN = Task 4
-
-    akan terdeteksi sebagai 1 Source Deadlock, dengan label JOIN = Task 4.
     """
 
     def __init__(self, uri, user, password):
@@ -286,7 +277,7 @@ class BPMNSourceDeadlockDetector:
 
 
 # ---------------------------------------------------------
-# 5. MAIN: CONTOH PEMAKAIAN
+# 5. MAIN: OUTPUT LEBIH ORANG-AWAM FRIENDLY
 # ---------------------------------------------------------
 if __name__ == "__main__":
     # Sesuaikan koneksi Neo4j
@@ -302,27 +293,75 @@ if __name__ == "__main__":
         deadlocks = detector.detect_source_deadlocks(PROCESS_ID)
 
         if not deadlocks:
-            print(f"Tidak ditemukan Source Deadlock untuk process_id={PROCESS_ID}")
+            print(f"Tidak ditemukan pola *Source Deadlock* pada process_id = {PROCESS_ID}.")
         else:
-            print(f"Ditemukan {len(deadlocks)} Source Deadlock untuk process_id={PROCESS_ID}:")
+            print(f"Ditemukan {len(deadlocks)} pola *Source Deadlock* pada process_id = {PROCESS_ID}.\n")
+
             for i, dl in enumerate(deadlocks, start=1):
                 s = dl["source"]
                 j = dl["join"]
                 s_info = dl["source_info"]
                 j_info = dl["join_info"]
 
-                print(f"\n[Source Deadlock #{i}]")
-                print("  SOURCE (node dengan >=2 SEQUENCE_FLOW keluar):")
-                print(f"    - {s}: name={s_info.get('name')}, type={s_info.get('type')}")
+                source_name = s_info.get("name") or s
+                join_name = j_info.get("name") or j
 
-                print("  JOIN (node tempat minimal 2 cabang dari SOURCE bertemu):")
-                print(f"    - {j}: name={j_info.get('name')}, type={j_info.get('type')}")
+                print(f"==============================================")
+                print(f"[Source Deadlock #{i}]")
+                print(f"Ringkasan masalah:")
+                print(f"  • Proses bercabang di aktivitas: {source_name} (id={s})")
+                print(f"  • Kedua cabang tersebut bergabung kembali di: {join_name} (id={j})")
+                print()
+                print("Detail pola:")
+                print("  - NODE SUMBER (tempat proses bercabang):")
+                print(f"      {source_name}  [type={s_info.get('type')}, id={s}]")
+                print("  - NODE GABUNGAN (tempat cabang-cabang bertemu kembali):")
+                print(f"      {join_name}  [type={j_info.get('type')}, id={j}]")
+                print()
+                print("  Jalur dari sumber ke titik gabungan:")
 
-                print("  Cabang-cabang dari SOURCE yang bertemu di JOIN:")
-                for c in dl["children"]:
+                for idx, c in enumerate(dl["children"], start=1):
                     c_info = dl["children_info"][c]
-                    path = dl["paths"][c]
-                    print(f"    - Child: {c}, name={c_info.get('name')}, type={c_info.get('type')}")
-                    print(f"      Path (id): {' -> '.join(path)}")
+                    c_name = c_info.get("name") or c
+                    path_ids = dl["paths"][c]
+
+                    # Konversi path id → path nama (kalau ada)
+                    path_names = []
+                    for nid in path_ids:
+                        n_info = dl["source_info"] if nid == s else dl["children_info"].get(nid, {})
+                        # fallback ke nodes global kalau mau, tapi di sini cukup:
+                    # Untuk aman, kita ambil dari union source/join/children
+                    # tapi lebih sederhana: pakai name dari nodes yang sudah kita punya:
+                    # (untuk simple, kita gunakan nama dari dict gabungan)
+                    # Di sini kita bangun map_name dulu:
+                    # (biar tidak ribet, kita buat lokal map)
+                    # Namun demi kesederhanaan output, saya gunakan nama khusus:
+
+                    # Karena di path_ids isinya: [S, child, ..., J],
+                    # kita ambil nama dari s_info / children_info / join_info:
+                    path_names = []
+                    for nid in path_ids:
+                        if nid == s:
+                            nm = s_info.get("name") or nid
+                        elif nid == j:
+                            nm = j_info.get("name") or nid
+                        elif nid in dl["children_info"]:
+                            nm = dl["children_info"][nid].get("name") or nid
+                        else:
+                            # fallback: tampilkan id jika tidak ada di kamus
+                            nm = nid
+                        path_names.append(nm)
+
+                    print(f"    Cabang {idx}:")
+                    print(f"      - Child: {c_name}  [type={c_info.get('type')}, id={c}]")
+                    print(f"      - Jalur: {' -> '.join(path_names)}")
+
+                print()
+                print("Penjelasan singkat:")
+                print(f"  Proses yang berawal dari '{source_name}' dipecah menjadi beberapa cabang,")
+                print(f"  lalu semua cabang tersebut bertemu lagi di '{join_name}' tanpa gateway yang jelas.")
+                print("  Pola seperti ini dikategorikan sebagai *Source Deadlock* karena struktur")
+                print("  percabangannya berpotensi menimbulkan ketidakjelasan alur eksekusi.\n")
+
     finally:
         detector.close()
