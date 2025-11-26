@@ -214,7 +214,6 @@ class BPMNImproperStructDeadlockDetector:
 
         # 4.3. Cek kombinasi XOR-split (S) dan AND-join (J)
         for s, xor_children in xor_splits:
-            # S harus reachable dari Start
             if start_nodes and s not in reachable_from_start:
                 continue
 
@@ -222,7 +221,6 @@ class BPMNImproperStructDeadlockDetector:
                 if j == s:
                     continue
 
-                # J harus bisa mencapai End
                 if end_nodes and j not in can_reach_end:
                     continue
 
@@ -239,12 +237,11 @@ class BPMNImproperStructDeadlockDetector:
                     if not path_c_to_j:
                         continue
 
-                    # Lengkapi dengan S di depan (karena ada edge S -> c via EXCLUSIVEGATEWAY)
+                    # Lengkapi dengan S di depan
                     full_path = [s] + path_c_to_j if path_c_to_j[0] != s else path_c_to_j
                     contributing_children.append(c)
                     child_paths[c] = full_path
 
-                # Jika minimal 2 child XOR bertemu di AND-join yang sama → Improper Structuring Deadlock
                 if len(contributing_children) >= 2:
                     improper_deadlocks.append({
                         "split": s,
@@ -262,7 +259,7 @@ class BPMNImproperStructDeadlockDetector:
 
 
 # ---------------------------------------------------------
-# 5. MAIN: CONTOH PEMAKAIAN
+# 5. MAIN – OUTPUT LEBIH ORANG-AWAM FRIENDLY
 # ---------------------------------------------------------
 if __name__ == "__main__":
     # Sesuaikan koneksi Neo4j
@@ -270,7 +267,7 @@ if __name__ == "__main__":
     NEO4J_USER = "neo4j"
     NEO4J_PASSWORD = "12345678"
 
-    # process_id dari graph Improper Struct yang kamu kirim
+    # process_id dari graph Improper Struct
     PROCESS_ID = "8f6842f8-634a-41f7-afbf-4e9d54065b0d"
 
     detector = BPMNImproperStructDeadlockDetector(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
@@ -278,32 +275,71 @@ if __name__ == "__main__":
         deadlocks = detector.detect_improper_struct_deadlocks(PROCESS_ID)
 
         if not deadlocks:
-            print(f"Tidak ditemukan Improper Structuring Deadlock untuk process_id={PROCESS_ID}")
+            print(f"Tidak ditemukan pola *Improper Structuring Deadlock* pada process_id = {PROCESS_ID}.")
         else:
-            print(f"Ditemukan {len(deadlocks)} Improper Structuring Deadlock untuk process_id={PROCESS_ID}:")
+            print(f"Ditemukan {len(deadlocks)} pola *Improper Structuring Deadlock* pada process_id = {PROCESS_ID}.\n")
+
             for i, dl in enumerate(deadlocks, start=1):
                 split_id = dl["split"]
                 join_id = dl["join"]
                 split_info = dl["split_info"]
                 join_info = dl["join_info"]
 
-                print(f"\n[Improper Structuring Deadlock #{i}]")
-                print("  XOR-SPLIT (>=2 EXCLUSIVEGATEWAY keluar):")
-                print(f"    - {split_id}: name={split_info.get('name')}, type={split_info.get('type')}")
+                split_name = split_info.get("name") or split_id
+                join_name = join_info.get("name") or join_id
 
-                print("  AND-JOIN (>=2 PARALLELGATEWAY masuk):")
-                print(f"    - {join_id}: name={join_info.get('name')}, type={join_info.get('type')}")
+                print("====================================================")
+                print(f"[Improper Structuring Deadlock #{i}]")
+                print("Ringkasan pola:")
+                print(f"  • Proses bercabang secara eksklusif (XOR) di: {split_name} (id={split_id})")
+                print(f"  • Cabang-cabang tersebut kemudian digabung secara paralel (AND) di: {join_name} (id={join_id})")
+                print("  • Kombinasi XOR-split → AND-join pada cabang yang sama ini")
+                print("    merupakan struktur yang tidak seimbang (*improper*),")
+                print("    dan berpotensi menimbulkan deadlock.\n")
 
-                print("  Child XOR yang berkontribusi ke AND-join:")
-                for c in dl["children"]:
+                print("Detail struktur:")
+                print("  - XOR-SPLIT (titik cabang, >=2 EXCLUSIVEGATEWAY keluar):")
+                print(f"      {split_name}  [type={split_info.get('type')}, id={split_id}]")
+
+                print("  - AND-JOIN (titik gabung, >=2 PARALLELGATEWAY masuk):")
+                print(f"      {join_name}  [type={join_info.get('type')}, id={join_id}]")
+
+                print("\n  Cabang XOR yang berkontribusi ke AND-join:")
+                for idx, c in enumerate(dl["children"], start=1):
                     c_info = dl["children_info"][c]
-                    path = dl["paths"][c]
-                    print(f"    - Child: {c}, name={c_info.get('name')}, type={c_info.get('type')}")
-                    print(f"      Path (id): {' -> '.join(path)}")
+                    c_name = c_info.get("name") or c
+                    path_ids = dl["paths"][c]
 
-                print("  Predecessor AND-join (sumber PARALLELGATEWAY):")
+                    # id → nama
+                    path_names = []
+                    for nid in path_ids:
+                        if nid == split_id:
+                            nm = split_name
+                        elif nid == join_id:
+                            nm = join_name
+                        elif nid in dl["children_info"]:
+                            nm = dl["children_info"][nid].get("name") or nid
+                        else:
+                            nm = nid
+                        path_names.append(nm)
+
+                    print(f"    Cabang {idx}:")
+                    print(f"      • Child: {c_name}  [type={c_info.get('type')}, id={c}]")
+                    print(f"      • Jalur: {' -> '.join(path_names)}")
+
+                print("\n  Node yang langsung masuk ke AND-join (sumber PARALLELGATEWAY):")
                 for p in dl["join_predecessors"]:
                     p_info = dl["join_predecessors_info"][p]
-                    print(f"    - {p}: name={p_info.get('name')}, type={p_info.get('type')}")
+                    p_name = p_info.get("name") or p
+                    print(f"      • {p_name}  [type={p_info.get('type')}, id={p}]")
+
+                print("\nPenjelasan singkat:")
+                print(f"  Gateway XOR di '{split_name}' memaksa proses memilih salah satu cabang,")
+                print(f"  tetapi kemudian cabang-cabang itu digabung lagi di gateway AND '{join_name}'.")
+                print("  Secara semantik, ini tidak konsisten dan dapat menyebabkan situasi")
+                print("  di mana proses menunggu semua cabang aktif, padahal secara XOR hanya")
+                print("  satu cabang yang pernah dijalankan. Itulah yang dikategorikan sebagai")
+                print("  *Improper Structuring Deadlock*.\n")
+
     finally:
         detector.close()

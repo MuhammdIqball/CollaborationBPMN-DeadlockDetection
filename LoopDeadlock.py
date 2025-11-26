@@ -252,11 +252,10 @@ class BPMNDeadlockDetector:
 
 
 # ---------------------------------------------------------
-# 8. CONTOH PEMAKAIAN (MAIN)
+# 8. MAIN – OUTPUT LEBIH ORANG-AWAM FRIENDLY
 # ---------------------------------------------------------
 if __name__ == "__main__":
     # --- KONFIGURASI NEO4J ---
-    # Ganti sesuai konfigurasi Neo4j Anda
     NEO4J_URI = "bolt://localhost:7687"
     NEO4J_USER = "neo4j"
     NEO4J_PASSWORD = "12345678"
@@ -269,16 +268,48 @@ if __name__ == "__main__":
         deadlocks = detector.detect_loop_deadlocks(PROCESS_ID)
 
         if not deadlocks:
-            print(f"Tidak ditemukan loop deadlock untuk process_id={PROCESS_ID}")
+            print(f"Tidak ditemukan *loop deadlock* pada process_id = {PROCESS_ID}.")
         else:
-            print(f"Ditemukan {len(deadlocks)} loop deadlock untuk process_id={PROCESS_ID}:")
+            print(f"Ditemukan {len(deadlocks)} *loop deadlock* pada process_id = {PROCESS_ID}.\n")
+
             for i, dl in enumerate(deadlocks, start=1):
-                print(f"\n[Loop Deadlock #{i}]")
-                print("Node dalam loop:")
-                for nid, info in dl["node_details"].items():
+                print("====================================================")
+                print(f"[Loop Deadlock #{i}]")
+
+                comp_nodes = dl["nodes"]
+                node_details = dl["node_details"]
+
+                # Nama ringkas untuk penjelasan
+                readable_nodes = []
+                for nid in comp_nodes:
+                    info = node_details.get(nid, {})
+                    # di file ini kita tidak punya 'name', hanya type+labels
+                    tipe = info.get("type") or "unknown"
+                    readable_nodes.append(f"{nid} (type={tipe})")
+
+                print("Ringkasan pola:")
+                print("  • Terdapat sekelompok aktivitas/gateway yang saling terhubung membentuk loop,")
+                print("    dan tidak ada jalur keluar dari loop tersebut menuju End Event.")
+                print("  • Jika proses masuk ke bagian ini, ia berpotensi 'berputar' terus di dalam")
+                print("    loop dan tidak pernah mencapai akhir proses.\n")
+
+                print("Node yang terlibat dalam loop:")
+                for nid in comp_nodes:
+                    info = node_details.get(nid, {})
                     print(f"  - {nid}: type={info.get('type')}, labels={info.get('labels')}")
+
                 if dl["cycle_example"]:
-                    print("Contoh jalur loop:")
-                    print("  " + " -> ".join(dl["cycle_example"]))
+                    # cycle_example adalah daftar id node, kita tampilkan sebagai jalur
+                    path_ids = dl["cycle_example"]
+                    print("\nContoh jalur loop (dalam bentuk urutan node id):")
+                    print("  " + " -> ".join(path_ids))
+
+                print("\nPenjelasan singkat:")
+                print("  Loop seperti ini biasanya muncul ketika model proses tidak memiliki")
+                print("  kondisi keluar yang jelas dari sebuah rangkaian aktivitas/gateway.")
+                print("  Secara eksekusi, instance proses yang masuk ke loop tersebut bisa saja")
+                print("  terus berputar tanpa pernah menyentuh node End, sehingga dikategorikan")
+                print("  sebagai *loop deadlock*.\n")
+
     finally:
         detector.close()
