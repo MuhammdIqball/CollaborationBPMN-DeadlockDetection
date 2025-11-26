@@ -196,17 +196,21 @@ class BPMNDeadlockDetector:
         return dfs(start)
 
     # ---------------------------------------------------------
-    # 7. DETEKSI LOOP DEADLOCK
+    # 7. DETEKSI LOOP & LOOP DEADLOCK
     # ---------------------------------------------------------
     def detect_loop_deadlocks(self, process_id):
         """
-        Deteksi 'loop deadlock' untuk process_id tertentu.
+        Deteksi loop dalam process_id tertentu dan klasifikasikan:
+        - loop_without_exit (tidak bisa mencapai End)  → kandidat loop deadlock
+        - loop_with_exit   (masih bisa mencapai End)   → loop tapi bukan deadlock
 
-        Definisi (approx sesuai proposal):
+        Logika:
         - Ambil SCC (cycle) yang:
-          * reachable dari minimal satu start event (pakai BFS dari start), DAN
-          * tidak ada node di SCC tsb yang bisa mencapai end event
-            (pakai reverse BFS dari end).
+          * reachable dari minimal satu start event (pakai BFS dari start).
+        - Untuk tiap SCC, cek:
+          * apakah ada node di SCC yang bisa mencapai End?
+            - kalau TIDAK → loop_without_exit
+            - kalau IYA  → loop_with_exit
         """
         nodes, adj, rev_adj = self._load_process_graph(process_id)
         start_nodes, end_nodes = self._find_start_and_end_nodes(nodes)
@@ -224,7 +228,7 @@ class BPMNDeadlockDetector:
         # Cari semua SCC
         sccs = self._tarjan_scc(adj)
 
-        loop_deadlocks = []
+        loops = []
         for comp in sccs:
             # Abaikan SCC trivial tanpa self-loop
             if len(comp) == 1:
@@ -232,27 +236,29 @@ class BPMNDeadlockDetector:
                 if node not in adj or node not in adj[node]:
                     continue
 
-            # Harus ada yg reachable dari start
+            # Harus ada yang reachable dari start
             if not (comp & reachable):
                 continue
 
-            # Kalau ada node di dalam SCC yang masih bisa mencapai end → bukan loop deadlock
-            if comp & can_reach_end:
-                continue
+            # cek apakah ada anggota SCC yang bisa reach End
+            reaches_end = bool(comp & can_reach_end)
 
-            # Ini kandidat loop deadlock
+            classification = "loop_without_exit" if not reaches_end else "loop_with_exit"
+
             cycle_example = self._extract_cycle_example(comp, adj)
-            loop_deadlocks.append({
+            loops.append({
                 "nodes": list(comp),
                 "cycle_example": cycle_example,
-                "node_details": {nid: nodes[nid] for nid in comp}
+                "node_details": {nid: nodes[nid] for nid in comp},
+                "reaches_end": reaches_end,
+                "classification": classification,
             })
 
-        return loop_deadlocks
+        return loops
 
 
 # ---------------------------------------------------------
-# 8. MAIN – OUTPUT LEBIH ORANG-AWAM FRIENDLY
+# 8. MAIN – OUTPUT LEBIH JELAS
 # ---------------------------------------------------------
 if __name__ == "__main__":
     # --- KONFIGURASI NEO4J ---
@@ -261,55 +267,51 @@ if __name__ == "__main__":
     NEO4J_PASSWORD = "12345678"
 
     # Ganti dengan process_id BPMN yang ingin dicek
-    PROCESS_ID = "18c83298-1228-4404-b6ef-443f4b6135bd"
+    PROCESS_ID = "dabc4f5c-1aea-4f27-a106-18930d60b904"
 
     detector = BPMNDeadlockDetector(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
     try:
-        deadlocks = detector.detect_loop_deadlocks(PROCESS_ID)
+        loops = detector.detect_loop_deadlocks(PROCESS_ID)
 
-        if not deadlocks:
-            print(f"Tidak ditemukan *loop deadlock* pada process_id = {PROCESS_ID}.")
+        if not loops:
+            print(f"Tidak ditemukan loop pada process_id = {PROCESS_ID}.")
         else:
-            print(f"Ditemukan {len(deadlocks)} *loop deadlock* pada process_id = {PROCESS_ID}.\n")
+            deadlock_like = [l for l in loops if l["classification"] == "loop_without_exit"]
+            exitable     = [l for l in loops if l["classification"] == "loop_with_exit"]
 
-            for i, dl in enumerate(deadlocks, start=1):
+            print(f"Ditemukan {len(loops)} loop pada process_id = {PROCESS_ID}.")
+            print(f"  • {len(deadlock_like)} loop_without_exit (kandidat loop deadlock)")
+            print(f"  • {len(exitable)} loop_with_exit (loop yang masih punya jalur ke End)\n")
+
+            for i, dl in enumerate(loops, start=1):
                 print("====================================================")
-                print(f"[Loop Deadlock #{i}]")
+                print(f"[Loop #{i}]  klasifikasi = {dl['classification']}")
+                if dl["reaches_end"]:
+                    print("  (Beberapa node di loop ini masih bisa mencapai End Event.)")
+                else:
+                    print("  (Tidak ada node di loop ini yang bisa mencapai End Event.)")
 
                 comp_nodes = dl["nodes"]
                 node_details = dl["node_details"]
 
-                # Nama ringkas untuk penjelasan
-                readable_nodes = []
-                for nid in comp_nodes:
-                    info = node_details.get(nid, {})
-                    # di file ini kita tidak punya 'name', hanya type+labels
-                    tipe = info.get("type") or "unknown"
-                    readable_nodes.append(f"{nid} (type={tipe})")
-
-                print("Ringkasan pola:")
-                print("  • Terdapat sekelompok aktivitas/gateway yang saling terhubung membentuk loop,")
-                print("    dan tidak ada jalur keluar dari loop tersebut menuju End Event.")
-                print("  • Jika proses masuk ke bagian ini, ia berpotensi 'berputar' terus di dalam")
-                print("    loop dan tidak pernah mencapai akhir proses.\n")
-
-                print("Node yang terlibat dalam loop:")
+                print("\nNode yang terlibat dalam loop:")
                 for nid in comp_nodes:
                     info = node_details.get(nid, {})
                     print(f"  - {nid}: type={info.get('type')}, labels={info.get('labels')}")
 
                 if dl["cycle_example"]:
-                    # cycle_example adalah daftar id node, kita tampilkan sebagai jalur
                     path_ids = dl["cycle_example"]
-                    print("\nContoh jalur loop (dalam bentuk urutan node id):")
+                    print("\nContoh jalur loop (urutan node id):")
                     print("  " + " -> ".join(path_ids))
 
-                print("\nPenjelasan singkat:")
-                print("  Loop seperti ini biasanya muncul ketika model proses tidak memiliki")
-                print("  kondisi keluar yang jelas dari sebuah rangkaian aktivitas/gateway.")
-                print("  Secara eksekusi, instance proses yang masuk ke loop tersebut bisa saja")
-                print("  terus berputar tanpa pernah menyentuh node End, sehingga dikategorikan")
-                print("  sebagai *loop deadlock*.\n")
+                print("\nCatatan:")
+                if dl["classification"] == "loop_without_exit":
+                    print("  Loop ini tidak punya jalur keluar ke End, sehingga jika token masuk,")
+                    print("  proses bisa berputar terus dan tidak pernah selesai (loop deadlock).")
+                else:
+                    print("  Loop ini masih memiliki jalur keluar ke End. Secara struktural ini")
+                    print("  tetap loop, tetapi tidak otomatis deadlock; perilakunya tergantung")
+                    print("  kondisi/gateway di model BPMN.\n")
 
     finally:
         detector.close()
